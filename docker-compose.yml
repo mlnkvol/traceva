@@ -1,0 +1,36 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./backend/uploads:/app/uploads
+      - ./backend/results:/app/results
+      - ./backend/checkpoints:/app/checkpoints
+    environment:
+      - DEVICE=cpu
+      - REDIS_URL=redis://redis:6379/0
+      - UPLOAD_DIR=uploads
+      - RESULTS_DIR=results
+      - CHECKPOINTS_DIR=checkpoints
+      - SAM_CHECKPOINT=checkpoints/sam2.1_hiera_tiny.pt
+      - SAM_MODEL_CFG=configs/sam2.1/sam2.1_hiera_t.yaml
+    depends_on:
+      - redis
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    ports:
+      - "5173:5173"
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

@@ -1,0 +1,22 @@
+from pydantic_settings import BaseSettings
+from pathlib import Path
+
+class Settings(BaseSettings):
+    APP_NAME: str = "Traceva"
+    DEBUG: bool = False
+    REDIS_URL: str = "redis://localhost:6379/0"
+    UPLOAD_DIR: Path = Path("uploads")
+    RESULT_DIR: Path = Path("results")
+    MAX_IMAGE_SIZE: int = 2048
+    SAM_CHECKPOINT: str = "checkpoints/sam2_hiera_large.pt"
+    SAM_MODEL_CFG: str = "sam2_hiera_l.yaml"
+    DEVICE: str = "cuda"  # або "cpu"
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+
+# Створюємо директорії при старті
+settings.UPLOAD_DIR.mkdir(exist_ok=True)
+settings.RESULT_DIR.mkdir(exist_ok=True)
