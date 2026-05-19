@@ -1,5 +1,6 @@
 import argparse
 import concurrent.futures
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -116,6 +117,7 @@ def _run_with_timeout(method: str, image_path: Path, output_svg: Path, config: B
         "potrace_turdsize": config.potrace_turdsize,
         "potrace_alphamax": config.potrace_alphamax,
         "opencv_kmeans_k": config.opencv_kmeans_k,
+        "vlm_enabled": config.vlm_enabled,
     }
     executor = concurrent.futures.ProcessPoolExecutor(max_workers=1)
     future = executor.submit(_run_method_job, (method, str(image_path), str(output_svg), config_values))
@@ -217,6 +219,7 @@ def _print_aggregate(df: pd.DataFrame) -> None:
 
 
 def run_benchmark(config: BenchmarkConfig, max_images: int | None = None) -> Path | None:
+    os.environ["VLM_LAYER_NAMING_ENABLED"] = "true" if config.vlm_enabled else "false"
     config.output_dir.mkdir(parents=True, exist_ok=True)
     images = _scan_images(config.image_dir, config.image_extensions, max_images)
 
@@ -270,6 +273,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--potrace-turdsize", type=int, default=2)
     parser.add_argument("--potrace-alphamax", type=float, default=1.0)
     parser.add_argument("--opencv-kmeans-k", type=int, default=6)
+    vlm_group = parser.add_mutually_exclusive_group()
+    vlm_group.add_argument("--vlm-enabled", dest="vlm_enabled", action="store_true")
+    vlm_group.add_argument("--no-vlm-enabled", dest="vlm_enabled", action="store_false")
+    parser.set_defaults(vlm_enabled=False)
     return parser.parse_args()
 
 
@@ -285,6 +292,7 @@ def main() -> None:
         potrace_turdsize=args.potrace_turdsize,
         potrace_alphamax=args.potrace_alphamax,
         opencv_kmeans_k=args.opencv_kmeans_k,
+        vlm_enabled=args.vlm_enabled,
     )
     run_benchmark(config, max_images=args.max_images)
 

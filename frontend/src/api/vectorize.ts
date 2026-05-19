@@ -9,6 +9,20 @@ import {
 
 const BASE = 'http://localhost:8000/api'
 
+export interface VlmStatus {
+  enabled: boolean
+  model: string
+  device: string
+  ready: boolean
+  load_failed: boolean
+}
+
+export async function fetchVlmStatus(): Promise<VlmStatus> {
+  const response = await fetch(`${BASE}/vlm/status`)
+  if (!response.ok) throw new Error('VLM status request failed')
+  return response.json()
+}
+
 export async function uploadImage(
   file: File,
   tolerance: number,

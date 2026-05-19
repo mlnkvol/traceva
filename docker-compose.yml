@@ -10,6 +10,7 @@ services:
       - ./backend/uploads:/app/uploads
       - ./backend/results:/app/results
       - ./backend/checkpoints:/app/checkpoints
+      - vlm_cache:/app/.cache/huggingface
     environment:
       - DEVICE=cpu
       - REDIS_URL=redis://redis:6379/0
@@ -18,10 +19,13 @@ services:
       - CHECKPOINTS_DIR=checkpoints
       - SAM_CHECKPOINT=checkpoints/sam2.1_hiera_tiny.pt
       - SAM_MODEL_CFG=configs/sam2.1/sam2.1_hiera_t.yaml
-      - VLM_LAYER_NAMING_ENABLED=false
+      - VLM_LAYER_NAMING_ENABLED=true
       - VLM_LAYER_NAMING_MODEL=microsoft/Florence-2-base
       - VLM_LAYER_NAMING_DEVICE=cpu
       - VLM_LAYER_NAMING_PROMPT=<CAPTION>
+      - VLM_LAYER_NAMING_MAX_TOKENS=12
+      - VLM_LAYER_NAMING_CROP_SIZE=384
+      - VLM_CACHE_DIR=/app/.cache/huggingface
     depends_on:
       - redis
 
@@ -38,3 +42,6 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+volumes:
+  vlm_cache:

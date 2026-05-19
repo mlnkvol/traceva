@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 from pathlib import Path
@@ -36,7 +37,7 @@ def _run_semantic(image_path: Path, output_svg: Path, config: BenchmarkConfig) -
     if image is None:
         raise ValueError(f"Could not read image: {image_path}")
 
-    settings.VLM_LAYER_NAMING_ENABLED = False
+    settings.VLM_LAYER_NAMING_ENABLED = bool(config.vlm_enabled)
     seg_service = SegmentationService(
         checkpoint=settings.SAM_CHECKPOINT,
         model_cfg=settings.SAM_MODEL_CFG,
@@ -98,6 +99,7 @@ def run(image_path: Path, output_svg: Path, mode: str, config: BenchmarkConfig) 
     method = f"traceva_{mode}"
     started = time.perf_counter()
     output_svg.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["VLM_LAYER_NAMING_ENABLED"] = "true" if config.vlm_enabled else "false"
 
     try:
         if mode not in {"auto", "logo", "semantic"}:

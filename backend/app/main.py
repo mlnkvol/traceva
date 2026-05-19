@@ -1,14 +1,33 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import router
+from app.api.routes import layer_namer, router
 from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app):
+    if getattr(settings, "VLM_LAYER_NAMING_ENABLED", False):
+        async def _warmup():
+            ok = await asyncio.to_thread(layer_namer.warmup)
+            logger.info("VLM warmup finished: ok=%s", ok)
+
+        asyncio.create_task(_warmup())
+    yield
 
 
 app = FastAPI(
     title="Traceva API",
-    description="Семантична gapless-векторизація зображень",
+    description="Semantic gapless vectorization API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 

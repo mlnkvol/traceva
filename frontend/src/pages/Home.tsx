@@ -25,6 +25,7 @@ import { ModeSelector } from '../components/ModeSelector'
 import { SvgViewer } from '../components/SvgViewer'
 import { ToleranceSlider } from '../components/ToleranceSlider'
 import { UploadZone } from '../components/UploadZone'
+import { VlmStatusBadge } from '../components/VlmStatusBadge'
 
 interface ImageAnalysis {
   width: number
@@ -749,6 +750,10 @@ export default function Home() {
       </header>
 
       <main className="max-w-[1600px] mx-auto px-6 py-8">
+        <div className="mb-5">
+          <VlmStatusBadge />
+        </div>
+
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 items-start">
           <section className="space-y-6">
             <UploadZone onFile={handleFileSelect} disabled={isProcessing} />

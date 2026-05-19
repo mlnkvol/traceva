@@ -30,3 +30,4 @@ class BenchmarkConfig:
     potrace_turdsize: int = 2
     potrace_alphamax: float = 1.0
     opencv_kmeans_k: int = 6
+    vlm_enabled: bool = False

@@ -34,6 +34,18 @@ class LayerNamer:
         self._device = None
         self._load_failed = False
 
+    @property
+    def is_ready(self) -> bool:
+        return self._model is not None and self._processor is not None
+
+    @property
+    def load_failed(self) -> bool:
+        return self._load_failed
+
+    def warmup(self) -> bool:
+        """Trigger lazy model loading. Returns True on success."""
+        return self._ensure_model_loaded()
+
     def name_layers(self, image: np.ndarray, masks: List[Dict]) -> List[str]:
         if not masks:
             return []
@@ -116,10 +128,12 @@ class LayerNamer:
             self._processor = AutoProcessor.from_pretrained(
                 model_id,
                 trust_remote_code=True,
+                cache_dir=str(settings.VLM_CACHE_DIR),
             )
             self._model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 trust_remote_code=True,
+                cache_dir=str(settings.VLM_CACHE_DIR),
             ).to(self._device)
             self._model.eval()
 
@@ -127,7 +141,7 @@ class LayerNamer:
             return True
         except Exception as exc:
             self._load_failed = True
-            logger.warning("VLM layer naming unavailable, using fallback names: %s", exc)
+            logger.exception("VLM layer naming unavailable, using fallback names: %s", exc)
             return False
 
     def _make_mask_crop(self, image: np.ndarray, mask: Optional[np.ndarray]) -> Optional[MaskCrop]:

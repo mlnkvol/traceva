@@ -1068,6 +1068,17 @@ async def get_status(task_id: str):
     )
 
 
+@router.get("/vlm/status")
+async def vlm_status():
+    return {
+        "enabled": settings.VLM_LAYER_NAMING_ENABLED,
+        "model": settings.VLM_LAYER_NAMING_MODEL,
+        "device": settings.VLM_LAYER_NAMING_DEVICE,
+        "ready": layer_namer.is_ready,
+        "load_failed": layer_namer.load_failed,
+    }
+
+
 @router.get("/result/{task_id}", response_model=VectorizeResult)
 async def get_result(task_id: str):
     if task_id not in tasks:

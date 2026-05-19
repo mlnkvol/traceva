@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     )
 
     VLM_LAYER_NAMING_ENABLED: bool = Field(
-        default=False,
+        default=True,
         alias="VLM_LAYER_NAMING_ENABLED",
     )
 
@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     VLM_LAYER_NAMING_CROP_SIZE: int = Field(
         default=384,
         alias="VLM_LAYER_NAMING_CROP_SIZE",
+    )
+
+    VLM_CACHE_DIR: Path = Field(
+        default=Path("/app/.cache/huggingface"),
+        alias="VLM_CACHE_DIR",
     )
 
 
