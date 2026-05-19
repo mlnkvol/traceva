@@ -22,7 +22,6 @@ from app.models.schemas import (
 )
 from app.services.segmentation import SegmentationService
 from app.services.tracing import ContourTracer
-from app.services.bezier import fit_cubic_bezier
 from app.services.svg_builder import SVGBuilder
 from app.services.logo_vectorizer import LogoVectorizer
 from app.services.layer_namer import LayerNamer
@@ -514,15 +513,6 @@ def _process_semantic_mode(
 
         tasks[task_id]["progress"] = 50 + int(22 * (index + 1) / max(len(masks), 1))
 
-        bezier_segs_per_contour = []
-
-        for contour in contours:
-            segs = fit_cubic_bezier(
-                contour.astype(float),
-                tolerance=tolerance,
-            )
-            bezier_segs_per_contour.append(segs)
-
         layers_data.append(
             {
                 "label": (
@@ -534,9 +524,9 @@ def _process_semantic_mode(
                 "color": mask_info.get("color", "#000000"),
                 "contours": contours,
                 "underpaint_contours": underpaint_contours or contours,
-                "bezier_segs": bezier_segs_per_contour,
-                "prefer_contours": False,
-                "stroke_width": 0.25,
+                "bezier_segs": [],
+                "prefer_contours": True,
+                "stroke_width": 0.0,
                 "underpaint_stroke_width": 0.0,
             }
         )
@@ -566,7 +556,7 @@ def _process_semantic_mode(
             "layers": [
                 {
                     "name": layer["label"],
-                    "node_count": sum(len(segs) for segs in layer["bezier_segs"]),
+                    "node_count": sum(len(contour) for contour in layer["contours"]),
                     "color": layer["color"],
                 }
                 for layer in layers_data

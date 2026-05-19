@@ -27,7 +27,6 @@ def _run_logo(image_path: Path, output_svg: Path, config: BenchmarkConfig) -> No
 
 def _run_semantic(image_path: Path, output_svg: Path, config: BenchmarkConfig) -> None:
     from app.core.config import settings
-    from app.services.bezier import fit_cubic_bezier
     from app.services.layer_namer import LayerNamer
     from app.services.segmentation import SegmentationService
     from app.services.svg_builder import SVGBuilder
@@ -68,19 +67,15 @@ def _run_semantic(image_path: Path, output_svg: Path, config: BenchmarkConfig) -
             min_area_ratio=0.0000005,
             max_contours=6000,
         )
-        bezier_segs = [
-            fit_cubic_bezier(contour.astype(float), tolerance=config.traceva_tolerance)
-            for contour in contours
-        ]
         layers.append(
             {
                 "label": layer_names[index] if index < len(layer_names) else mask_info.get("label", "Layer"),
                 "color": mask_info.get("color", "#000000"),
                 "contours": contours,
                 "underpaint_contours": underpaint or contours,
-                "bezier_segs": bezier_segs,
-                "prefer_contours": False,
-                "stroke_width": 0.25,
+                "bezier_segs": [],
+                "prefer_contours": True,
+                "stroke_width": 0.0,
                 "underpaint_stroke_width": 0.0,
             }
         )
