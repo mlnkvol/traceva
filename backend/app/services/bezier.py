@@ -36,7 +36,7 @@ def _fit_recursive(pts: np.ndarray, tol: float, out: List):
     try:
         result = np.linalg.lstsq(A, b_vec, rcond=None)
         ctrl = result[0]
-        p1, p2 = ctrl[0], ctrl[1]
+        p1, p2 = ctrl[0:2], ctrl[2:4]
     except np.linalg.LinAlgError:
         p1 = p0 + (p3 - p0) / 3
         p2 = p0 + 2 * (p3 - p0) / 3
