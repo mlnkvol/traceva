@@ -1,8 +1,23 @@
 import React, { useEffect, useState } from 'react'
 import { AlertCircle, BarChart3, ImageIcon, Lightbulb, Loader2, Sparkles, Wand2 } from 'lucide-react'
 
-import { fetchResult, pollStatus, uploadImage } from '../api/vectorize'
-import type { AnalysisRun, EditableLayer, LayerInfo, VectorizeMode, VectorizeResult } from '../types'
+import {
+  fetchResult,
+  finalizeMaskPreview,
+  pollStatus,
+  uploadImage,
+  splitPreviewMask,
+} from '../api/vectorize'
+import type {
+  AnalysisRun,
+  EditableLayer,
+  EditableMaskLayer,
+  LayerInfo,
+  MaskPreview,
+  MaskPreviewResult,
+  VectorizeMode,
+  VectorizeResult,
+} from '../types'
 
 import { AnalyticsDashboard } from '../components/AnalyticsDashboard'
 import { LayerPreview } from '../components/LayerPreview'
@@ -16,10 +31,15 @@ interface ImageAnalysis {
   height: number
   megapixels: number
   uniqueColorBuckets: number
+  fineColorBuckets: number
   avgSaturation: number
   grayStd: number
   midtoneRatio: number
   edgeRatio: number
+  fineEdgeRatio: number
+  textureRatio: number
+  colorEntropy: number
+  complexityScore: number
 }
 
 interface ParameterRecommendation {
@@ -85,7 +105,7 @@ function loadImageFromFile(file: File): Promise<HTMLImageElement> {
 
 async function analyzeImage(file: File): Promise<ImageAnalysis> {
   const image = await loadImageFromFile(file)
-  const maxSide = 160
+  const maxSide = 220
   const scale = Math.min(1, maxSide / Math.max(image.width, image.height))
   const width = Math.max(1, Math.round(image.width * scale))
   const height = Math.max(1, Math.round(image.height * scale))
@@ -102,6 +122,8 @@ async function analyzeImage(file: File): Promise<ImageAnalysis> {
   const data = context.getImageData(0, 0, width, height).data
   const grayValues: number[] = []
   const colorBuckets = new Set<string>()
+  const fineColorBuckets = new Set<string>()
+  const histogram = new Map<string, number>()
 
   let saturationSum = 0
   let graySum = 0
@@ -121,6 +143,9 @@ async function analyzeImage(file: File): Promise<ImageAnalysis> {
     const saturation = calculateSaturation(r, g, b)
 
     colorBuckets.add(`${Math.floor(r / 32)}-${Math.floor(g / 32)}-${Math.floor(b / 32)}`)
+    fineColorBuckets.add(`${Math.floor(r / 16)}-${Math.floor(g / 16)}-${Math.floor(b / 16)}`)
+    const histogramKey = `${Math.floor(r / 48)}-${Math.floor(g / 48)}-${Math.floor(b / 48)}`
+    histogram.set(histogramKey, (histogram.get(histogramKey) || 0) + 1)
     grayValues.push(gray)
     graySum += gray
     graySquaredSum += gray * gray
@@ -137,10 +162,15 @@ async function analyzeImage(file: File): Promise<ImageAnalysis> {
       height: image.height,
       megapixels: (image.width * image.height) / 1_000_000,
       uniqueColorBuckets: 0,
+      fineColorBuckets: 0,
       avgSaturation: 0,
       grayStd: 0,
       midtoneRatio: 0,
       edgeRatio: 0,
+      fineEdgeRatio: 0,
+      textureRatio: 0,
+      colorEntropy: 0,
+      complexityScore: 0,
     }
   }
 
@@ -151,34 +181,137 @@ async function analyzeImage(file: File): Promise<ImageAnalysis> {
   const midtoneRatio = 1 - (darkPixels + lightPixels) / validPixels
 
   let edgeCount = 0
+  let fineEdgeCount = 0
+  let textureCount = 0
   let edgeTotal = 0
 
-  for (let y = 0; y < height - 1; y += 1) {
-    for (let x = 0; x < width - 1; x += 1) {
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
       const current = grayValues[y * width + x]
       const right = grayValues[y * width + x + 1]
       const bottom = grayValues[(y + 1) * width + x]
-      if (current === undefined || right === undefined || bottom === undefined) continue
+      const left = grayValues[y * width + x - 1]
+      const top = grayValues[(y - 1) * width + x]
+      if (
+        current === undefined ||
+        right === undefined ||
+        bottom === undefined ||
+        left === undefined ||
+        top === undefined
+      ) continue
 
       const diff = Math.max(Math.abs(current - right), Math.abs(current - bottom))
+      const localTexture = (
+        Math.abs(current - right) +
+        Math.abs(current - bottom) +
+        Math.abs(current - left) +
+        Math.abs(current - top)
+      ) / 4
       if (diff > 35) edgeCount += 1
+      if (diff > 18) fineEdgeCount += 1
+      if (localTexture > 12 && localTexture <= 45) textureCount += 1
       edgeTotal += 1
     }
   }
+
+  let colorEntropy = 0
+  histogram.forEach((count) => {
+    const probability = count / validPixels
+    if (probability > 0) colorEntropy -= probability * Math.log2(probability)
+  })
+
+  const colorComplexity = clamp(colorBuckets.size / 120, 0, 1)
+  const fineColorComplexity = clamp(fineColorBuckets.size / 420, 0, 1)
+  const edgeComplexity = clamp((edgeTotal > 0 ? fineEdgeCount / edgeTotal : 0) / 0.32, 0, 1)
+  const textureComplexity = clamp((edgeTotal > 0 ? textureCount / edgeTotal : 0) / 0.45, 0, 1)
+  const entropyComplexity = clamp(colorEntropy / 5.2, 0, 1)
+  const resolutionComplexity = clamp(((image.width * image.height) / 1_000_000) / 3, 0, 1)
+  const complexityScore = Math.round(
+    100 * (
+      colorComplexity * 0.2 +
+      fineColorComplexity * 0.18 +
+      edgeComplexity * 0.22 +
+      textureComplexity * 0.18 +
+      entropyComplexity * 0.14 +
+      resolutionComplexity * 0.08
+    )
+  )
 
   return {
     width: image.width,
     height: image.height,
     megapixels: (image.width * image.height) / 1_000_000,
     uniqueColorBuckets: colorBuckets.size,
+    fineColorBuckets: fineColorBuckets.size,
     avgSaturation,
     grayStd,
     midtoneRatio,
     edgeRatio: edgeTotal > 0 ? edgeCount / edgeTotal : 0,
+    fineEdgeRatio: edgeTotal > 0 ? fineEdgeCount / edgeTotal : 0,
+    textureRatio: edgeTotal > 0 ? textureCount / edgeTotal : 0,
+    colorEntropy,
+    complexityScore,
   }
 }
 
 function buildRecommendation(analysis: ImageAnalysis): ParameterRecommendation {
+  const complexity = analysis.complexityScore
+  const detailHeavy =
+    analysis.fineEdgeRatio > 0.22 ||
+    analysis.textureRatio > 0.22 ||
+    analysis.fineColorBuckets > 320
+  const looksLikeLogo =
+    analysis.uniqueColorBuckets <= 45 &&
+    analysis.midtoneRatio <= 0.36 &&
+    analysis.grayStd >= 35 &&
+    analysis.edgeRatio >= 0.015 &&
+    analysis.colorEntropy < 3.8
+  const looksLikePhoto =
+    analysis.uniqueColorBuckets > 55 ||
+    analysis.fineColorBuckets > 180 ||
+    analysis.midtoneRatio > 0.38 ||
+    analysis.avgSaturation > 0.16 ||
+    analysis.textureRatio > 0.16
+  const maxLayers = complexity >= 82 ? 72 : complexity >= 68 ? 64 : complexity >= 52 ? 48 : complexity >= 36 ? 36 : 24
+  const tolerance = detailHeavy || complexity >= 72 ? 0.45 : complexity >= 52 ? 0.5 : complexity >= 36 ? 0.6 : 0.75
+  const statsText = `Складність ${complexity}/100, кольорових груп ${analysis.uniqueColorBuckets}, дрібних кольорів ${analysis.fineColorBuckets}, контурність ${(analysis.fineEdgeRatio * 100).toFixed(0)}%, текстурність ${(analysis.textureRatio * 100).toFixed(0)}%.`
+
+  if (looksLikeLogo && !looksLikePhoto) {
+    return {
+      mode: 'logo',
+      tolerance: analysis.edgeRatio > 0.08 ? 0.5 : 0.8,
+      maxLayers: analysis.uniqueColorBuckets <= 18 ? 1 : 4,
+      title: 'Схоже на логотип або line-art',
+      description: 'Рекомендовано Logo Mode',
+      reason: `${statsText} Мало кольорів і чіткі межі, тому краще трасувати як графіку з невеликою кількістю шарів.`,
+    }
+  }
+
+  if (looksLikePhoto) {
+    return {
+      mode: 'semantic',
+      tolerance,
+      maxLayers,
+      title: detailHeavy ? 'Фото з великою кількістю деталей' : 'Схоже на фото або складне зображення',
+      description: 'Рекомендовано Semantic Mode',
+      reason: `${statsText} Для цього файлу краще ${maxLayers} шарів і tolerance ${tolerance}: так збережеться більше дрібних кольорових зон без надмірного роздуття SVG.`,
+    }
+  }
+
+  const simpleLayers = complexity >= 30 ? 18 : 12
+  const simpleTolerance = complexity >= 30 ? 0.65 : 0.8
+
+  return {
+    mode: 'auto',
+    tolerance: simpleTolerance,
+    maxLayers: simpleLayers,
+    title: 'Зображення середньої складності',
+    description: 'Рекомендовано Auto Mode',
+    reason: `${statsText} Почни з ${simpleLayers} шарів і tolerance ${simpleTolerance}; цього достатньо для помірної кількості кольорів без зайвих вузлів.`,
+  }
+}
+
+function buildRecommendationLegacy(analysis: ImageAnalysis): ParameterRecommendation {
   const looksLikeLogo =
     analysis.uniqueColorBuckets <= 45 &&
     analysis.midtoneRatio <= 0.36 &&
@@ -205,10 +338,10 @@ function buildRecommendation(analysis: ImageAnalysis): ParameterRecommendation {
     return {
       mode: 'semantic',
       tolerance: 0.5,
-      maxLayers: analysis.edgeRatio > 0.08 ? 84 : 72,
+      maxLayers: analysis.edgeRatio > 0.08 ? 48 : 36,
       title: 'Схоже на фото або складне зображення',
       description: 'Рекомендовано Semantic Mode',
-      reason: 'Для фото застосовується detail-first gapless SVG pipeline: 72-84 кольорові шари, tolerance 0.5 і перевірка CAD Readiness після рендера.',
+      reason: 'Для фото застосовується detail-first gapless SVG pipeline: 36-48 шарів для швидкого прев’ю, tolerance 0.5 і перевірка CAD Readiness після рендера.',
     }
   }
 
@@ -269,6 +402,16 @@ function createEditableLayers(layers: LayerInfo[]): EditableLayer[] {
   })
 }
 
+function createEditableMaskLayers(masks: MaskPreview[]): EditableMaskLayer[] {
+  return masks.map((mask) => ({
+    id: `preview-${mask.id}`,
+    name: mask.name,
+    color: mask.color,
+    sourceMaskIds: [mask.id],
+    visible: true,
+  }))
+}
+
 function loadAnalysisHistory(): AnalysisRun[] {
   try {
     const rawHistory = window.localStorage.getItem(ANALYSIS_HISTORY_KEY)
@@ -295,11 +438,15 @@ export default function Home() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [result, setResult] = useState<VectorizeResult | null>(null)
+  const [maskPreview, setMaskPreview] = useState<MaskPreviewResult | null>(null)
+  const [maskLayers, setMaskLayers] = useState<EditableMaskLayer[]>([])
+  const [selectedMaskLayerIds, setSelectedMaskLayerIds] = useState<string[]>([])
   const [editableLayers, setEditableLayers] = useState<EditableLayer[]>([])
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null)
   const [activeResultTab, setActiveResultTab] = useState<'editor' | 'analytics'>('editor')
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisRun[]>(() => loadAnalysisHistory())
   const [isProcessing, setIsProcessing] = useState(false)
+  const [isPreviewReady, setIsPreviewReady] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
 
@@ -312,9 +459,13 @@ export default function Home() {
   const resetResultState = () => {
     setTaskId(null)
     setResult(null)
+    setMaskPreview(null)
+    setMaskLayers([])
+    setSelectedMaskLayerIds([])
     setEditableLayers([])
     setSelectedLayerId(null)
     setActiveResultTab('editor')
+    setIsPreviewReady(false)
     setProgress(0)
     setError(null)
   }
@@ -368,54 +519,82 @@ export default function Home() {
       setActiveResultTab('editor')
 
       const initialResult = await uploadImage(selectedFile, tolerance, maxLayers, simplify, mode)
+
       setTaskId(initialResult.task_id)
-
-      let currentProgress = 0
-      let isDone = false
-
-      while (!isDone) {
-        await new Promise((resolve) => setTimeout(resolve, 800))
-        const status = await pollStatus(initialResult.task_id)
-
-        currentProgress = status.progress ?? currentProgress
-        setProgress(currentProgress)
-
-        if (status.status === 'done') {
-          isDone = true
-          const finalResult = await fetchResult(initialResult.task_id)
-          const finalLayers = createEditableLayers(finalResult.layers || [])
-
-          setResult(finalResult)
-          setEditableLayers(finalLayers)
-          setSelectedLayerId(null)
-          setActiveResultTab('editor')
-          setProgress(100)
-
-          setAnalysisHistory((currentHistory) => {
-            const nextHistory = [
-              ...currentHistory,
-              {
-                id: finalResult.task_id,
-                createdAt: new Date().toISOString(),
-                requestedMode: finalResult.requested_mode,
-                mode: finalResult.mode,
-                metrics: finalResult.metrics,
-                layerCount: finalLayers.length,
-              },
-            ].slice(-100)
-
-            saveAnalysisHistory(nextHistory)
-            return nextHistory
-          })
-        }
-
-        if (status.status === 'error') {
-          throw new Error(status.error || 'Не вдалося виконати векторизацію')
-        }
-      }
+      setMaskPreview(null)
+      setMaskLayers([])
+      setSelectedMaskLayerIds([])
+      setIsPreviewReady(false)
+      await collectFinalResult(initialResult.task_id)
     } catch (err) {
       console.error(err)
       setError(err instanceof Error && err.message ? err.message : 'Не вдалося векторизувати зображення')
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const collectFinalResult = async (currentTaskId: string) => {
+    let currentProgress = 30
+    let isDone = false
+
+    while (!isDone) {
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      const status = await pollStatus(currentTaskId)
+
+      currentProgress = status.progress ?? currentProgress
+      setProgress(currentProgress)
+
+      if (status.status === 'done') {
+        isDone = true
+        const finalResult = await fetchResult(currentTaskId)
+        const finalLayers = createEditableLayers(finalResult.layers || [])
+
+        setResult(finalResult)
+        setEditableLayers(finalLayers)
+        setSelectedLayerId(null)
+        setActiveResultTab('editor')
+        setProgress(100)
+
+        setAnalysisHistory((currentHistory) => {
+          const nextHistory = [
+            ...currentHistory,
+            {
+              id: finalResult.task_id,
+              createdAt: new Date().toISOString(),
+              requestedMode: finalResult.requested_mode,
+              mode: finalResult.mode,
+              metrics: finalResult.metrics,
+              layerCount: finalLayers.length,
+            },
+          ].slice(-100)
+
+          saveAnalysisHistory(nextHistory)
+          return nextHistory
+        })
+      }
+
+      if (status.status === 'error') {
+        throw new Error(status.error || 'Не вдалося виконати фінальну векторизацію')
+      }
+    }
+  }
+
+  const handleConfirmMaskPreview = async () => {
+    if (!taskId || !maskLayers.length) return
+
+    try {
+      setIsProcessing(true)
+      setError(null)
+      setProgress(30)
+      setResult(null)
+      setEditableLayers([])
+
+      await finalizeMaskPreview(taskId, tolerance, simplify, maskLayers)
+      await collectFinalResult(taskId)
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error && err.message ? err.message : 'Не вдалося векторизувати підтверджені шари')
     } finally {
       setIsProcessing(false)
     }
@@ -453,6 +632,96 @@ export default function Home() {
       nextLayers.splice(nextIndex, 0, layer)
       return nextLayers
     })
+  }
+
+  const handleSelectMaskLayer = (id: string, multi = false) => {
+    setSelectedMaskLayerIds((currentIds) => {
+      if (!multi) return currentIds.includes(id) && currentIds.length === 1 ? [] : [id]
+      return currentIds.includes(id)
+        ? currentIds.filter((currentId) => currentId !== id)
+        : [...currentIds, id]
+    })
+  }
+
+  const handleRenameMaskLayer = (id: string, name: string) => {
+    setMaskLayers((currentLayers) =>
+      currentLayers.map((layer) => (layer.id === id ? { ...layer, name } : layer))
+    )
+  }
+
+  const handleToggleMaskLayer = (id: string) => {
+    setMaskLayers((currentLayers) =>
+      currentLayers.map((layer) => (layer.id === id ? { ...layer, visible: !layer.visible } : layer))
+    )
+  }
+
+  const handleDeleteMaskLayer = (id: string) => {
+    setMaskLayers((currentLayers) => currentLayers.filter((layer) => layer.id !== id))
+    setSelectedMaskLayerIds((currentIds) => currentIds.filter((currentId) => currentId !== id))
+  }
+
+  const handleMoveMaskLayer = (id: string, direction: -1 | 1) => {
+    setMaskLayers((currentLayers) => {
+      const index = currentLayers.findIndex((layer) => layer.id === id)
+      const nextIndex = index + direction
+      if (index < 0 || nextIndex < 0 || nextIndex >= currentLayers.length) return currentLayers
+
+      const nextLayers = [...currentLayers]
+      const [layer] = nextLayers.splice(index, 1)
+      nextLayers.splice(nextIndex, 0, layer)
+      return nextLayers
+    })
+  }
+
+  const handleMergeMaskLayers = () => {
+    const selected = maskLayers.filter((layer) => selectedMaskLayerIds.includes(layer.id))
+    if (selected.length < 2) return
+
+    const mergedLayer: EditableMaskLayer = {
+      id: `preview-merged-${Date.now()}`,
+      name: selected.map((layer) => layer.name).join(' + ').slice(0, 60),
+      color: selected[0].color,
+      sourceMaskIds: selected.flatMap((layer) => layer.sourceMaskIds),
+      visible: true,
+    }
+
+    const selectedSet = new Set(selectedMaskLayerIds)
+    const firstIndex = maskLayers.findIndex((layer) => selectedSet.has(layer.id))
+    const nextLayers = maskLayers.filter((layer) => !selectedSet.has(layer.id))
+    nextLayers.splice(Math.max(0, firstIndex), 0, mergedLayer)
+
+    setMaskLayers(nextLayers)
+    setSelectedMaskLayerIds([mergedLayer.id])
+  }
+
+  const handleSplitMaskLayer = async () => {
+    if (!taskId || selectedMaskLayerIds.length !== 1) return
+
+    const selectedLayer = maskLayers.find((layer) => layer.id === selectedMaskLayerIds[0])
+    if (!selectedLayer || selectedLayer.sourceMaskIds.length !== 1) return
+
+    try {
+      setIsProcessing(true)
+      const sourceMaskId = selectedLayer.sourceMaskIds[0]
+      const preview = await splitPreviewMask(taskId, sourceMaskId)
+      const splitMasks = preview.masks.filter((mask) => mask.id.startsWith(`${sourceMaskId}-part-`))
+
+      if (!splitMasks.length) return
+
+      const replacementLayers = createEditableMaskLayers(splitMasks)
+      const selectedIndex = maskLayers.findIndex((layer) => layer.id === selectedLayer.id)
+      const nextLayers = maskLayers.filter((layer) => layer.id !== selectedLayer.id)
+      nextLayers.splice(Math.max(0, selectedIndex), 0, ...replacementLayers)
+
+      setMaskPreview(preview)
+      setMaskLayers(nextLayers)
+      setSelectedMaskLayerIds(replacementLayers.map((layer) => layer.id))
+    } catch (err) {
+      console.error(err)
+      setError(err instanceof Error && err.message ? err.message : 'Не вдалося розділити маску')
+    } finally {
+      setIsProcessing(false)
+    }
   }
 
   useEffect(() => {
@@ -554,12 +823,12 @@ export default function Home() {
                 {isProcessing ? (
                   <>
                     <Loader2 size={18} className="animate-spin" />
-                    Векторизуємо... {progress > 0 ? `${progress}%` : ''}
+                    Створюємо SVG... {progress > 0 ? `${progress}%` : ''}
                   </>
                 ) : (
                   <>
                     <Sparkles size={18} />
-                    Векторизувати зображення
+                    Векторизувати SVG
                   </>
                 )}
               </button>
@@ -595,7 +864,7 @@ export default function Home() {
                 <div className="px-5 py-4 border-b border-gray-100">
                   <h2 className="font-bold text-gray-900">Оригінал фото</h2>
                   <p className="text-sm text-gray-500 mt-1">
-                    Порівнюй параметри з реальним зображенням перед векторизацією
+                    Оригінал лишається тут для порівняння з готовим SVG-результатом
                   </p>
                 </div>
 
@@ -725,8 +994,10 @@ export default function Home() {
                     <SvgViewer
                       svgUrl={result?.svg_url || ''}
                       taskId={taskId || ''}
+                      filename={result?.filename}
                       layers={editableLayers}
                       selectedLayerId={selectedLayerId}
+                      onSelectLayer={setSelectedLayerId}
                     />
                   </div>
                 )}
@@ -824,8 +1095,10 @@ export default function Home() {
                   <SvgViewer
                     svgUrl={result.svg_url}
                     taskId={taskId}
+                    filename={result.filename}
                     layers={editableLayers}
                     selectedLayerId={selectedLayerId}
+                    onSelectLayer={setSelectedLayerId}
                   />
                 </div>
               </div>

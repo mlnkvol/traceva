@@ -34,5 +34,35 @@ class Settings(BaseSettings):
         alias="REDIS_URL",
     )
 
+    VLM_LAYER_NAMING_ENABLED: bool = Field(
+        default=False,
+        alias="VLM_LAYER_NAMING_ENABLED",
+    )
+
+    VLM_LAYER_NAMING_MODEL: str = Field(
+        default="microsoft/Florence-2-base",
+        alias="VLM_LAYER_NAMING_MODEL",
+    )
+
+    VLM_LAYER_NAMING_DEVICE: str = Field(
+        default="cpu",
+        alias="VLM_LAYER_NAMING_DEVICE",
+    )
+
+    VLM_LAYER_NAMING_PROMPT: str = Field(
+        default="<CAPTION>",
+        alias="VLM_LAYER_NAMING_PROMPT",
+    )
+
+    VLM_LAYER_NAMING_MAX_TOKENS: int = Field(
+        default=12,
+        alias="VLM_LAYER_NAMING_MAX_TOKENS",
+    )
+
+    VLM_LAYER_NAMING_CROP_SIZE: int = Field(
+        default=384,
+        alias="VLM_LAYER_NAMING_CROP_SIZE",
+    )
+
 
 settings = Settings()

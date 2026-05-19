@@ -6,8 +6,20 @@ import { getSvgDownloadUrl } from '../api/vectorize'
 interface Props {
   svgUrl: string
   taskId: string
+  filename?: string
   layers?: EditableLayer[]
   selectedLayerId?: string | null
+  onSelectLayer?: (layerId: string | null) => void
+}
+
+const INKSCAPE_NS = 'http://www.inkscape.org/namespaces/inkscape'
+
+function safeSvgId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/gi, '-')
+    .replace(/^-+|-+$/g, '') || 'layer'
 }
 
 function findSvgGroup(svg: SVGElement, layer: EditableLayer): Element | null {
@@ -26,6 +38,7 @@ function applyLayerState(svgContent: string, layers?: EditableLayer[], selectedL
 
     if (!svg) return svgContent
 
+    svg.setAttribute('xmlns:inkscape', INKSCAPE_NS)
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
     svg.setAttribute(
       'style',
@@ -58,6 +71,14 @@ function applyLayerState(svgContent: string, layers?: EditableLayer[], selectedL
         }
 
         group.setAttribute('data-layer-name', layer.displayName)
+        group.setAttribute('data-layer-id', layer.id)
+        group.setAttribute('data-label', layer.displayName)
+        group.setAttribute('data-name', layer.displayName)
+        group.setAttributeNS(INKSCAPE_NS, 'inkscape:label', layer.displayName)
+
+        if (layer.id !== 'layer-1' || group.getAttribute('id') !== 'layer-logo') {
+          group.setAttribute('id', `${layer.id}-${safeSvgId(layer.displayName)}`)
+        }
 
         Array.from(group.querySelectorAll('path')).forEach((path) => {
           path.removeAttribute('filter')
@@ -67,6 +88,7 @@ function applyLayerState(svgContent: string, layers?: EditableLayer[], selectedL
             path.setAttribute('stroke', '#7C3AED')
             path.setAttribute('stroke-width', '4')
             path.setAttribute('vector-effect', 'non-scaling-stroke')
+            path.setAttribute('paint-order', 'stroke fill')
           }
         })
 
@@ -88,8 +110,10 @@ function applyLayerState(svgContent: string, layers?: EditableLayer[], selectedL
 export const SvgViewer: React.FC<Props> = ({
   svgUrl,
   taskId,
+  filename,
   layers,
   selectedLayerId,
+  onSelectLayer,
 }) => {
   const [svgContent, setSvgContent] = useState('')
   const [zoom, setZoom] = useState(1)
@@ -137,6 +161,15 @@ export const SvgViewer: React.FC<Props> = ({
       if (downloadUrl.startsWith('blob:')) URL.revokeObjectURL(downloadUrl)
     }
   }, [downloadUrl])
+
+  const handleSvgClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!onSelectLayer) return
+
+    const target = event.target as Element | null
+    const group = target?.closest?.('g[data-layer-id]')
+    const layerId = group?.getAttribute('data-layer-id') || null
+    onSelectLayer(layerId)
+  }
 
   return (
     <div className="space-y-5">
@@ -186,11 +219,12 @@ export const SvgViewer: React.FC<Props> = ({
 
           {!loadError && svgContent && (
             <div
+              onClick={handleSvgClick}
               style={{
                 transform: `scale(${zoom})`,
                 transformOrigin: 'center',
               }}
-              className="w-full h-full flex items-center justify-center transition-transform [&_svg]:max-w-full [&_svg]:max-h-full [&_svg]:w-auto [&_svg]:h-auto [&_svg]:block"
+              className="w-full h-full flex items-center justify-center transition-transform [&_g[data-layer-id]]:cursor-pointer [&_svg]:max-w-full [&_svg]:max-h-full [&_svg]:w-auto [&_svg]:h-auto [&_svg]:block"
               dangerouslySetInnerHTML={{ __html: modifiedSvgContent }}
             />
           )}
@@ -199,7 +233,7 @@ export const SvgViewer: React.FC<Props> = ({
 
       <a
         href={downloadUrl}
-        download={`${taskId}.svg`}
+        download={filename || `${taskId}.svg`}
         className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-semibold transition-colors"
       >
         <Download size={18} />

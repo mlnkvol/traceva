@@ -98,6 +98,70 @@ class ContourTracer:
 
         return traced_contours[:max_contours]
 
+    def trace_raw_underpaint(
+        self,
+        mask: np.ndarray,
+        dilate_px: int = 2,
+        min_area_ratio: float = 0.000001,
+        max_contours: int = 6000,
+    ) -> List[np.ndarray]:
+        """
+        Trace a mask for gapless underpaint without the normal cleanup pass.
+
+        The visible Bezier layer can be smoothed, but the underpaint must keep
+        tiny islands and slightly overlap neighboring colors so no transparent
+        cracks remain between SVG shapes.
+        """
+        if mask is None or mask.size == 0:
+            return []
+
+        prepared_mask = self._to_uint_mask(mask)
+        h, w = prepared_mask.shape[:2]
+        image_area = h * w
+
+        if image_area == 0:
+            return []
+
+        if dilate_px > 0:
+            kernel_size = int(dilate_px) * 2 + 1
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (kernel_size, kernel_size),
+            )
+            prepared_mask = cv2.dilate(prepared_mask, kernel, iterations=1)
+
+        contours, _hierarchy = cv2.findContours(
+            prepared_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+
+        if not contours:
+            return []
+
+        min_area = max(1, int(image_area * min_area_ratio))
+        traced_contours: List[np.ndarray] = []
+
+        for contour in contours:
+            if contour is None or len(contour) < 3:
+                continue
+
+            if abs(cv2.contourArea(contour)) < min_area:
+                continue
+
+            closed = self._ensure_closed_contour(contour)
+            pts = closed.reshape(-1, 2)
+
+            if len(pts) >= 3:
+                traced_contours.append(pts)
+
+        traced_contours.sort(
+            key=lambda pts: abs(cv2.contourArea(pts.reshape(-1, 1, 2))),
+            reverse=True,
+        )
+
+        return traced_contours[:max_contours]
+
     # ------------------------------------------------------------------
     # Main contour processing
     # ------------------------------------------------------------------
@@ -213,15 +277,15 @@ class ContourTracer:
 
         if min_side < 350:
             close_size = 3
-            open_size = 3
+            open_size = 1
             blur_size = 3
         elif min_side < 1000:
             close_size = 5
-            open_size = 3
+            open_size = 1
             blur_size = 3
         else:
             close_size = 7
-            open_size = 3
+            open_size = 1
             blur_size = 5
 
         close_kernel = cv2.getStructuringElement(
@@ -255,7 +319,7 @@ class ContourTracer:
         h, w = uint_mask.shape[:2]
         image_area = h * w
 
-        min_component_area = max(8, int(image_area * 0.00008))
+        min_component_area = max(2, int(image_area * 0.000006))
 
         num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
             (uint_mask > 0).astype(np.uint8),

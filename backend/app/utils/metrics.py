@@ -12,6 +12,7 @@ from lxml import etree
 logger = logging.getLogger(__name__)
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
+INKSCAPE_LABEL = "{http://www.inkscape.org/namespaces/inkscape}label"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -153,7 +154,7 @@ def count_named_layers(svg_path: Path) -> int:
 
     for group in groups:
         group_id = group.get("id", "") or ""
-        label = group.get("label", "") or ""
+        label = group.get("label", "") or group.get(INKSCAPE_LABEL, "") or ""
 
         if group_id.startswith("layer-") or label.strip():
             named += 1

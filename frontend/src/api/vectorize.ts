@@ -1,5 +1,11 @@
 import axios from 'axios'
-import { VectorizeResult, TaskStatusResponse, VectorizeMode } from '../types'
+import {
+  EditableMaskLayer,
+  MaskPreviewResult,
+  TaskStatusResponse,
+  VectorizeMode,
+  VectorizeResult,
+} from '../types'
 
 const BASE = 'http://localhost:8000/api'
 
@@ -46,4 +52,61 @@ export async function analyzeImage(file: File) {
     headers: { 'Content-Type': 'multipart/form-data' }
   })
   return data  // { mode, tolerance, max_layers, reason, tips }
+}
+
+export async function prepareMaskPreview(
+  file: File,
+  maxLayers: number,
+  mode: VectorizeMode
+): Promise<MaskPreviewResult> {
+  const form = new FormData()
+
+  form.append('file', file)
+  form.append('max_layers', String(maxLayers))
+  form.append('mode', mode)
+
+  const { data } = await axios.post<MaskPreviewResult>(`${BASE}/vectorize/prepare`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+
+  return data
+}
+
+export async function splitPreviewMask(taskId: string, maskId: string): Promise<MaskPreviewResult> {
+  const { data } = await axios.post<MaskPreviewResult>(`${BASE}/preview/${taskId}/split/${maskId}`)
+  return data
+}
+
+export async function finalizeMaskPreview(
+  taskId: string,
+  tolerance: number,
+  simplify: boolean,
+  layers: EditableMaskLayer[]
+): Promise<VectorizeResult> {
+  const { data } = await axios.post<VectorizeResult>(`${BASE}/vectorize/finalize/${taskId}`, {
+    tolerance,
+    simplify,
+    layers: layers
+      .filter((layer) => layer.visible && layer.sourceMaskIds.length > 0)
+      .map((layer) => ({
+        id: layer.id,
+        name: layer.name,
+        color: layer.color,
+        source_mask_ids: layer.sourceMaskIds,
+      })),
+  })
+
+  return data
+}
+
+export function getPreviewImageUrl(taskId: string): string {
+  return `/api/preview/${taskId}/image`
+}
+
+export function getPreviewMaskUrl(taskId: string, maskId: string): string {
+  return `/api/preview/${taskId}/mask/${maskId}`
+}
+
+export function getPreviewMaskOverlayUrl(taskId: string, maskId: string): string {
+  return `/api/preview/${taskId}/mask/${maskId}/overlay`
 }

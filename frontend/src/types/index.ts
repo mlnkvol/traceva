@@ -1,4 +1,4 @@
-export type TaskStatus = 'pending' | 'processing' | 'done' | 'error'
+export type TaskStatus = 'pending' | 'processing' | 'preview' | 'done' | 'error'
 
 export type VectorizeMode = 'auto' | 'logo' | 'semantic'
 
@@ -12,6 +12,32 @@ export interface EditableLayer extends LayerInfo {
   id: string
   originalName: string
   displayName: string
+  visible: boolean
+}
+
+export interface MaskPreview {
+  id: string
+  name: string
+  color: string
+  area: number
+  bbox: number[]
+}
+
+export interface MaskPreviewResult {
+  task_id: string
+  status: TaskStatus
+  image_url: string
+  masks: MaskPreview[]
+  requested_mode?: VectorizeMode
+  mode?: VectorizeMode
+  error?: string
+}
+
+export interface EditableMaskLayer {
+  id: string
+  name: string
+  color: string
+  sourceMaskIds: string[]
   visible: boolean
 }
 
@@ -43,6 +69,7 @@ export interface VectorizeResult {
   task_id: string
   status: TaskStatus
   svg_url?: string
+  filename?: string
   layers?: LayerInfo[]
   metrics?: Metrics
   requested_mode?: VectorizeMode

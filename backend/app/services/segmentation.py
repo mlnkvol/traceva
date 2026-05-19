@@ -185,6 +185,299 @@ class SegmentationService:
 
         return self._segment_fallback(image, max_layers=max_layers)
 
+    def generate_preview_masks(self, image: np.ndarray, max_layers: int = 24) -> List[Dict]:
+        """
+        Returns object-like SAM masks for the interactive pre-vectorization editor.
+
+        Unlike segment(), this intentionally does not create full-frame color
+        quantization layers. The preview stage is for design intent: object parts,
+        holes, leaves, hair, shadows, etc. can be merged/deleted/reordered before
+        tracing starts.
+        """
+        if image is None or image.size == 0:
+            return []
+
+        if self.mask_generator is None:
+            logger.warning("SAM preview unavailable; using classical object-mask fallback.")
+            return self._generate_classical_preview_masks(image, max_layers=max_layers)
+
+        h, w = image.shape[:2]
+        image_area = max(1, h * w)
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        try:
+            sam_masks = self.mask_generator.generate(rgb)
+        except Exception as exc:
+            logger.warning("SAM preview mask generation failed: %s", exc)
+            return self._generate_classical_preview_masks(image, max_layers=max_layers)
+
+        candidates = []
+
+        for item in sam_masks or []:
+            mask = item.get("segmentation")
+            area = int(item.get("area", 0) or 0)
+
+            if mask is None:
+                continue
+
+            mask_bool = mask.astype(bool)
+            area = area or int(mask_bool.sum())
+            ratio = area / image_area
+
+            if ratio < 0.0015 or ratio > 0.88:
+                continue
+
+            border_overlap = self._border_overlap_ratio(mask_bool)
+            if ratio > 0.45 and border_overlap > 0.22:
+                continue
+
+            mask_bool = self._cleanup_mask(
+                mask_bool,
+                min_area=max(24, int(image_area * 0.00012)),
+                close_kernel_size=3,
+                open_kernel_size=1,
+            )
+
+            area = int(mask_bool.sum())
+            if area <= 0:
+                continue
+
+            candidates.append(
+                {
+                    "mask": mask_bool,
+                    "label": "sam_mask",
+                    "color": self._mean_bgr_color(image, mask_bool),
+                    "area": area,
+                    "predicted_iou": float(item.get("predicted_iou", 0.0) or 0.0),
+                    "stability_score": float(item.get("stability_score", 0.0) or 0.0),
+                }
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                item.get("stability_score", 0.0),
+                item.get("predicted_iou", 0.0),
+                min(item["area"], image_area * 0.28),
+            ),
+            reverse=True,
+        )
+
+        accepted: List[Dict] = []
+
+        for candidate in candidates:
+            candidate_mask = candidate["mask"].astype(bool)
+            candidate_area = max(1, int(candidate_mask.sum()))
+
+            too_similar = False
+            for accepted_item in accepted:
+                accepted_mask = accepted_item["mask"].astype(bool)
+                intersection = int(np.logical_and(candidate_mask, accepted_mask).sum())
+                union = int(np.logical_or(candidate_mask, accepted_mask).sum())
+                overlap_candidate = intersection / candidate_area
+                iou = intersection / max(1, union)
+
+                if iou > 0.78 or overlap_candidate > 0.88:
+                    too_similar = True
+                    break
+
+            if too_similar:
+                continue
+
+            candidate["label"] = f"sam_mask_{len(accepted) + 1}"
+            accepted.append(candidate)
+
+            if len(accepted) >= max_layers:
+                break
+
+        accepted.sort(key=lambda item: item["area"], reverse=True)
+        if accepted:
+            return accepted
+
+        logger.warning("SAM preview returned no usable masks; using classical fallback.")
+        return self._generate_classical_preview_masks(image, max_layers=max_layers)
+
+    def _generate_classical_preview_masks(self, image: np.ndarray, max_layers: int = 24) -> List[Dict]:
+        h, w = image.shape[:2]
+        image_area = max(1, h * w)
+
+        foreground = self._grabcut_foreground(image)
+
+        if foreground is None or int(foreground.sum()) < image_area * 0.015:
+            foreground = self._saliency_foreground(image)
+
+        if foreground is None or int(foreground.sum()) == 0:
+            return []
+
+        foreground = self._cleanup_mask(
+            foreground,
+            min_area=max(32, int(image_area * 0.00025)),
+            close_kernel_size=5,
+            open_kernel_size=1,
+        )
+
+        pieces = self._split_preview_foreground_by_color(
+            image=image,
+            foreground=foreground,
+            max_layers=max_layers,
+        )
+
+        if not pieces:
+            pieces = [foreground]
+
+        layers: List[Dict] = []
+
+        for index, mask in enumerate(pieces[:max_layers], start=1):
+            mask = mask.astype(bool)
+            area = int(mask.sum())
+
+            if area <= 0:
+                continue
+
+            layers.append(
+                {
+                    "mask": mask,
+                    "label": f"preview_mask_{index}",
+                    "color": self._mean_bgr_color(image, mask),
+                    "area": area,
+                }
+            )
+
+        layers.sort(key=lambda item: item["area"], reverse=True)
+        return layers
+
+    def _grabcut_foreground(self, image: np.ndarray) -> Optional[np.ndarray]:
+        try:
+            h, w = image.shape[:2]
+            margin_x = max(2, int(w * 0.04))
+            margin_y = max(2, int(h * 0.04))
+            rect = (
+                margin_x,
+                margin_y,
+                max(1, w - 2 * margin_x),
+                max(1, h - 2 * margin_y),
+            )
+
+            gc_mask = np.full((h, w), cv2.GC_BGD, dtype=np.uint8)
+            bgd_model = np.zeros((1, 65), np.float64)
+            fgd_model = np.zeros((1, 65), np.float64)
+
+            cv2.grabCut(
+                image,
+                gc_mask,
+                rect,
+                bgd_model,
+                fgd_model,
+                4,
+                cv2.GC_INIT_WITH_RECT,
+            )
+
+            return (gc_mask == cv2.GC_FGD) | (gc_mask == cv2.GC_PR_FGD)
+        except Exception as exc:
+            logger.warning("GrabCut preview fallback failed: %s", exc)
+            return None
+
+    def _saliency_foreground(self, image: np.ndarray) -> Optional[np.ndarray]:
+        try:
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            saturation = hsv[:, :, 1]
+            value = hsv[:, :, 2]
+            edges = cv2.Canny(gray, 60, 150)
+            edges = cv2.dilate(edges, np.ones((3, 3), dtype=np.uint8), iterations=1)
+
+            sat_threshold = max(45, int(np.percentile(saturation, 72)))
+            dark_threshold = int(np.percentile(value, 18))
+            bright_threshold = int(np.percentile(value, 88))
+
+            mask = (
+                (saturation >= sat_threshold)
+                | (value <= dark_threshold)
+                | ((value >= bright_threshold) & (saturation >= 25))
+                | (edges > 0)
+            )
+
+            border = max(4, int(min(image.shape[:2]) * 0.025))
+            mask[:border, :] = False
+            mask[-border:, :] = False
+            mask[:, :border] = False
+            mask[:, -border:] = False
+            return mask
+        except Exception as exc:
+            logger.warning("Saliency preview fallback failed: %s", exc)
+            return None
+
+    def _split_preview_foreground_by_color(
+        self,
+        image: np.ndarray,
+        foreground: np.ndarray,
+        max_layers: int,
+    ) -> List[np.ndarray]:
+        foreground = foreground.astype(bool)
+        h, w = foreground.shape[:2]
+        image_area = max(1, h * w)
+        flat_indices = np.flatnonzero(foreground)
+
+        if len(flat_indices) < 20:
+            return []
+
+        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+        ys, xs = np.where(foreground)
+        pixels = lab[foreground].astype(np.float32)
+        spatial_scale = max(h, w)
+        spatial = np.column_stack(
+            [
+                xs.astype(np.float32) / spatial_scale * 28.0,
+                ys.astype(np.float32) / spatial_scale * 28.0,
+            ]
+        )
+        features = np.column_stack([pixels, spatial]).astype(np.float32)
+
+        k = int(np.clip(min(max_layers, max(4, max_layers // 2)), 2, 18))
+
+        try:
+            _compactness, labels, _centers = cv2.kmeans(
+                features,
+                k,
+                None,
+                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 35, 0.6),
+                2,
+                cv2.KMEANS_PP_CENTERS,
+            )
+        except Exception:
+            return []
+
+        pieces: List[np.ndarray] = []
+        min_piece_area = max(24, int(image_area * 0.0012))
+
+        for cluster_id in range(k):
+            cluster_mask = np.zeros((h, w), dtype=bool)
+            selector = labels.reshape(-1) == cluster_id
+            cluster_mask.flat[flat_indices[selector]] = True
+
+            num_labels, component_labels, stats, _ = cv2.connectedComponentsWithStats(
+                cluster_mask.astype(np.uint8),
+                connectivity=8,
+            )
+
+            for label_id in range(1, num_labels):
+                area = int(stats[label_id, cv2.CC_STAT_AREA])
+                if area < min_piece_area:
+                    continue
+
+                component = component_labels == label_id
+                component = self._cleanup_mask(
+                    component,
+                    min_area=min_piece_area,
+                    close_kernel_size=3,
+                    open_kernel_size=1,
+                )
+
+                if int(component.sum()) >= min_piece_area:
+                    pieces.append(component)
+
+        pieces.sort(key=lambda mask: int(mask.sum()), reverse=True)
+        return pieces
+
     # ══════════════════════════════════════════════════════════════
     # FULL IMAGE SEMANTIC PIPELINE
     # ══════════════════════════════════════════════════════════════
@@ -934,13 +1227,6 @@ class SegmentationService:
             if len(belongs_to_this_layer) > 0:
                 layers[layer_idx]["mask"].flat[belongs_to_this_layer] = True
                 layers[layer_idx]["area"] = int(layers[layer_idx]["mask"].sum())
-
-        for layer in layers:
-            layer["mask"] = self._fill_holes(
-                layer["mask"],
-                close_kernel_size=5,
-            )
-            layer["area"] = int(layer["mask"].sum())
 
         return layers
 

@@ -18,6 +18,10 @@ services:
       - CHECKPOINTS_DIR=checkpoints
       - SAM_CHECKPOINT=checkpoints/sam2.1_hiera_tiny.pt
       - SAM_MODEL_CFG=configs/sam2.1/sam2.1_hiera_t.yaml
+      - VLM_LAYER_NAMING_ENABLED=false
+      - VLM_LAYER_NAMING_MODEL=microsoft/Florence-2-base
+      - VLM_LAYER_NAMING_DEVICE=cpu
+      - VLM_LAYER_NAMING_PROMPT=<CAPTION>
     depends_on:
       - redis
 

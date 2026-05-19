@@ -4,6 +4,9 @@ from typing import List, Dict, Tuple
 from pathlib import Path
 
 
+INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
+
+
 class SVGBuilder:
     """
     Модуль 4: збирає фінальний SVG із семантичними шарами.
@@ -26,6 +29,13 @@ class SVGBuilder:
             size=(f"{width}px", f"{height}px"),
             viewBox=f"0 0 {width} {height}",
             profile="full",
+        )
+        dwg.attribs["style"] = (
+            "shape-rendering:geometricPrecision; "
+            "text-rendering:geometricPrecision; "
+            "image-rendering:optimizeQuality; "
+            "fill-rule:evenodd; "
+            "clip-rule:evenodd"
         )
 
         # Метадані SVG
@@ -65,6 +75,34 @@ class SVGBuilder:
                 path_sources = layer.get("bezier_segs", [])
                 path_builder = self._segments_to_path
 
+            underpaint_contours = layer.get("underpaint_contours") or []
+            underpaint_stroke_width = float(layer.get("underpaint_stroke_width", 1.15))
+
+            for contour in underpaint_contours:
+                if contour is None or len(contour) == 0:
+                    continue
+
+                underpaint_d = self._contour_to_path(contour)
+                if not underpaint_d:
+                    continue
+
+                underpaint_path_attrs = {
+                    "d": underpaint_d,
+                    "fill": color,
+                    "fill_opacity": 1,
+                    "stroke_linejoin": "round",
+                    "stroke_linecap": "round",
+                    "style": "opacity:1",
+                }
+
+                if underpaint_stroke_width > 0:
+                    underpaint_path_attrs["stroke"] = color
+                    underpaint_path_attrs["stroke_width"] = underpaint_stroke_width
+                else:
+                    underpaint_path_attrs["stroke"] = "none"
+
+                group.add(dwg.path(**underpaint_path_attrs))
+
             for path_source in path_sources:
                 if path_source is None or len(path_source) == 0:
                     continue
@@ -74,21 +112,36 @@ class SVGBuilder:
                 if not path_d:
                     continue
 
-                path = dwg.path(
-                    d=path_d,
-                    fill=color,
-                    fill_opacity=1,
-                    stroke=color,
-                    stroke_width=1.4 if layer.get("prefer_contours") else 2.25,
-                    stroke_linejoin="round",
-                    stroke_linecap="round",
+                stroke_width = float(
+                    layer.get(
+                        "stroke_width",
+                        0.85 if layer.get("prefer_contours") else 0.65,
+                    )
                 )
+
+                path_attrs = {
+                    "d": path_d,
+                    "fill": color,
+                    "fill_opacity": 1,
+                    "stroke_linejoin": "round",
+                    "stroke_linecap": "round",
+                    "style": "opacity:1",
+                }
+
+                if stroke_width > 0:
+                    path_attrs["stroke"] = color
+                    path_attrs["stroke_width"] = stroke_width
+                else:
+                    path_attrs["stroke"] = "none"
+
+                path = dwg.path(**path_attrs)
 
                 group.add(path)
 
             dwg.add(group)
 
         dwg.save(pretty=True)
+        self._attach_inkscape_labels(output_path, layers)
         return str(output_path)
 
     def _contour_to_path(self, contour) -> str:
@@ -154,3 +207,42 @@ class SVGBuilder:
         value = value.strip("-")
 
         return value or "layer"
+
+    def _attach_inkscape_labels(self, output_path: Path, layers: List[Dict]) -> None:
+        try:
+            from lxml import etree
+
+            etree.register_namespace("inkscape", INKSCAPE_NS)
+            parser = etree.XMLParser(remove_blank_text=False)
+            tree = etree.parse(str(output_path), parser)
+            root = tree.getroot()
+
+            if f"{{{INKSCAPE_NS}}}version" not in root.attrib:
+                root.set(f"{{{INKSCAPE_NS}}}version", "1.3")
+
+            for index, layer in enumerate(layers):
+                label = str(layer.get("label", f"Layer {index + 1}"))
+                safe_label = self._safe_id(label)
+                group_id = f"layer-{index + 1}-{safe_label}"
+                group = root.xpath(
+                    f".//svg:g[@id=$group_id]",
+                    namespaces={"svg": "http://www.w3.org/2000/svg"},
+                    group_id=group_id,
+                )
+
+                if not group:
+                    continue
+
+                group_el = group[0]
+                group_el.set(f"{{{INKSCAPE_NS}}}label", label)
+                group_el.set("data-label", label)
+                group_el.set("data-name", label)
+
+            tree.write(
+                str(output_path),
+                encoding="utf-8",
+                xml_declaration=True,
+                pretty_print=True,
+            )
+        except Exception:
+            return

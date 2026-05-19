@@ -1,9 +1,10 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 import uuid
 import shutil
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -12,12 +13,19 @@ import cv2
 import numpy as np
 
 from app.core.config import settings
-from app.models.schemas import VectorizeResult, TaskStatusResponse, TaskStatus
+from app.models.schemas import (
+    FinalizeVectorizeRequest,
+    MaskPreviewResult,
+    TaskStatus,
+    TaskStatusResponse,
+    VectorizeResult,
+)
 from app.services.segmentation import SegmentationService
 from app.services.tracing import ContourTracer
 from app.services.bezier import fit_cubic_bezier
 from app.services.svg_builder import SVGBuilder
 from app.services.logo_vectorizer import LogoVectorizer
+from app.services.layer_namer import LayerNamer
 from app.utils.metrics import compute_all_metrics
 
 
@@ -29,6 +37,14 @@ tasks: dict = {}
 tracer = ContourTracer()
 svg_builder = SVGBuilder()
 logo_vectorizer = LogoVectorizer()
+layer_namer = LayerNamer()
+
+
+def _svg_download_name(filename: Optional[str]) -> str:
+    base = Path(filename or "vectorized").stem.strip()
+    base = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", base)
+    base = re.sub(r"\s+", " ", base).strip(" .-_")
+    return f"{base or 'vectorized'}.svg"
 
 _seg_service: Optional[SegmentationService] = None
 
@@ -289,6 +305,78 @@ def _compute_metrics_safe(
         return compute_all_metrics(image_path, out_path)
 
 
+def _mask_bbox(mask: np.ndarray) -> list[int]:
+    mask_bool = mask.astype(bool)
+    if int(mask_bool.sum()) == 0:
+        return [0, 0, 0, 0]
+
+    ys, xs = np.where(mask_bool)
+    return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+
+def _preview_payload(task_id: str) -> MaskPreviewResult:
+    task = tasks.get(task_id)
+
+    if not task:
+        raise HTTPException(status_code=404, detail="Task не знайдено")
+
+    preview_masks = task.get("preview_masks") or []
+
+    return MaskPreviewResult(
+        task_id=task_id,
+        status=task.get("status", TaskStatus.PREVIEW),
+        image_url=f"/api/preview/{task_id}/image",
+        masks=[
+            {
+                "id": item["id"],
+                "name": item["name"],
+                "color": item["color"],
+                "area": int(item["area"]),
+                "bbox": item["bbox"],
+            }
+            for item in preview_masks
+        ],
+        requested_mode=task.get("requested_mode"),
+        mode=task.get("mode"),
+        error=task.get("error"),
+    )
+
+
+def _build_preview_masks(
+    image: np.ndarray,
+    masks: list[dict],
+    use_vlm_names: bool = False,
+) -> list[dict]:
+    layer_names = layer_namer.name_layers(image, masks) if use_vlm_names else []
+    preview_masks = []
+
+    for index, mask_info in enumerate(masks):
+        mask = mask_info["mask"].astype(bool)
+        name = layer_names[index] if index < len(layer_names) else f"Mask {index + 1}"
+
+        preview_masks.append(
+            {
+                "id": f"mask-{index + 1}",
+                "name": name,
+                "color": mask_info.get("color", "#000000"),
+                "area": int(mask.sum()),
+                "bbox": _mask_bbox(mask),
+                "mask": mask,
+                "source_label": mask_info.get("label", "Layer"),
+            }
+        )
+
+    return preview_masks
+
+
+def _find_preview_mask(task: dict, mask_id: str) -> Optional[dict]:
+    for item in task.get("preview_masks") or []:
+        if item.get("id") == mask_id:
+            return item
+
+    return None
+
+
 def _attach_processing_time(task_id: str, started_at: float) -> None:
     """Додає processing_time у metrics після завершення pipeline."""
     elapsed = round(time.perf_counter() - started_at, 3)
@@ -398,17 +486,32 @@ def _process_semantic_mode(
 
     tasks[task_id]["progress"] = 50
 
+    layer_names = layer_namer.name_layers(image, masks)
+
     layers_data = []
 
-    for mask_info in masks:
+    for index, mask_info in enumerate(masks):
+        trace_max_contours = 2200 if max_layers >= 32 else 1200
         contours = tracer.trace(
             mask_info["mask"],
             simplify=False,
             epsilon_factor=0.0012,
-            min_area_ratio=0.00004,
+            min_area_ratio=0.000004,
             keep_holes=False,
-            max_contours=240,
+            max_contours=trace_max_contours,
         )
+
+        if not contours:
+            continue
+
+        underpaint_contours = tracer.trace_raw_underpaint(
+            mask_info["mask"],
+            dilate_px=0,
+            min_area_ratio=0.0000005,
+            max_contours=8000,
+        )
+
+        tasks[task_id]["progress"] = 50 + int(22 * (index + 1) / max(len(masks), 1))
 
         bezier_segs_per_contour = []
 
@@ -421,27 +524,32 @@ def _process_semantic_mode(
 
         layers_data.append(
             {
-                "label": mask_info.get("label", "Layer"),
+                "label": (
+                    layer_names[index]
+                    if index < len(layer_names)
+                    else mask_info.get("label", "Layer")
+                ),
+                "source_label": mask_info.get("label", "Layer"),
                 "color": mask_info.get("color", "#000000"),
                 "contours": contours,
+                "underpaint_contours": underpaint_contours or contours,
                 "bezier_segs": bezier_segs_per_contour,
-                "prefer_contours": True,
+                "prefer_contours": False,
+                "stroke_width": 0.25,
+                "underpaint_stroke_width": 0.0,
             }
         )
 
     tasks[task_id]["progress"] = 75
 
     out_path = settings.RESULTS_DIR / f"{task_id}.svg"
-    background_color = None
-    if masks:
-        background_color = masks[0].get("color", "#FFFFFF")
 
     svg_builder.build(
         layers_data,
         width=width,
         height=height,
         output_path=out_path,
-        background_color=background_color,
+        background_color=masks[0].get("color", "#FFFFFF") if masks else "#FFFFFF",
     )
 
     tasks[task_id]["progress"] = 90
@@ -466,6 +574,50 @@ def _process_semantic_mode(
             "error": None,
         }
     )
+
+
+def _process_preview_finalization(
+    task_id: str,
+    tolerance: float,
+    simplify: bool,
+    requested_layers: list[dict],
+) -> None:
+    started_at = time.perf_counter()
+
+    try:
+        task = tasks[task_id]
+        task["status"] = TaskStatus.PROCESSING
+        task["progress"] = 30
+        task["error"] = None
+
+        image_path = Path(task["image_path"])
+        image = task["image"]
+        height = int(task["height"])
+        width = int(task["width"])
+        max_layers = int(
+            np.clip(task.get("max_layers", len(requested_layers) or 10), 1, 96)
+        )
+
+        _process_semantic_mode(
+            task_id=task_id,
+            image_path=image_path,
+            image=image,
+            width=width,
+            height=height,
+            tolerance=tolerance,
+            max_layers=max_layers,
+            simplify=simplify,
+        )
+        _attach_processing_time(task_id, started_at)
+    except Exception as e:
+        logger.exception("Помилка фіналізації preview task %s", task_id)
+
+        if task_id in tasks:
+            tasks[task_id]["status"] = TaskStatus.ERROR
+            tasks[task_id]["error"] = str(e)
+            tasks[task_id]["metrics"] = {
+                "processing_time": round(time.perf_counter() - started_at, 3)
+            }
 
 
 def _process_image(
@@ -603,6 +755,7 @@ async def vectorize(
         "status": TaskStatus.PENDING,
         "progress": 0,
         "svg_path": None,
+        "download_filename": _svg_download_name(file.filename),
         "metrics": None,
         "layers": None,
         "requested_mode": requested_mode,
@@ -623,8 +776,274 @@ async def vectorize(
     return VectorizeResult(
         task_id=task_id,
         status=TaskStatus.PENDING,
+        filename=tasks[task_id]["download_filename"],
         requested_mode=requested_mode,
         mode=None,
+    )
+
+
+@router.post("/vectorize/prepare", response_model=MaskPreviewResult)
+async def prepare_vectorize_preview(
+    file: UploadFile = File(...),
+    max_layers: int = Form(5),
+    mode: str = Form("auto"),
+):
+    ensure_app_dirs()
+    max_layers = int(np.clip(max_layers, 1, 96))
+
+    allowed_types = ["image/png", "image/jpeg", "image/webp"]
+
+    if file.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail="Підтримуються лише PNG, JPG, WebP",
+        )
+
+    task_id = str(uuid.uuid4())
+    original_ext = Path(file.filename or "").suffix.lower()
+
+    if original_ext not in [".png", ".jpg", ".jpeg", ".webp"]:
+        original_ext = ".png"
+
+    image_path = settings.UPLOAD_DIR / f"{task_id}{original_ext}"
+
+    try:
+        with open(image_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    finally:
+        await file.close()
+
+    image = cv2.imread(str(image_path))
+
+    if image is None:
+        raise HTTPException(status_code=400, detail="Не вдалося прочитати зображення")
+
+    image, h, w = _save_resized_if_needed(image, image_path)
+    requested_mode = normalize_mode(mode)
+    selected_mode = "logo" if requested_mode == "logo" else "semantic"
+
+    if requested_mode == "auto":
+        selected_mode = "logo" if _is_logo_candidate(image) else "semantic"
+
+    if selected_mode == "logo":
+        full_mask = np.ones((h, w), dtype=bool)
+        masks = [
+            {
+                "mask": full_mask,
+                "label": "logo",
+                "color": "#111111",
+                "area": int(full_mask.sum()),
+            }
+        ]
+    else:
+        seg_service = get_seg_service()
+        masks = seg_service.generate_preview_masks(
+            image,
+            max_layers=min(max_layers, 48),
+        )
+
+        if not masks:
+            raise HTTPException(status_code=503, detail="Preview masks unavailable")
+
+    preview_masks = _build_preview_masks(image, masks)
+
+    tasks[task_id] = {
+        "status": TaskStatus.PREVIEW,
+        "progress": 25,
+        "svg_path": None,
+        "download_filename": _svg_download_name(file.filename),
+        "metrics": None,
+        "layers": None,
+        "requested_mode": requested_mode,
+        "mode": selected_mode,
+        "error": None,
+        "image_path": str(image_path),
+        "image": image,
+        "width": w,
+        "height": h,
+        "max_layers": max_layers,
+        "preview_masks": preview_masks,
+    }
+
+    return _preview_payload(task_id)
+
+
+@router.get("/preview/{task_id}", response_model=MaskPreviewResult)
+async def get_preview(task_id: str):
+    return _preview_payload(task_id)
+
+
+@router.get("/preview/{task_id}/image")
+async def get_preview_image(task_id: str):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task не знайдено")
+
+    image_path = tasks[task_id].get("image_path")
+
+    if not image_path or not Path(image_path).exists():
+        raise HTTPException(status_code=404, detail="Зображення не знайдено")
+
+    return FileResponse(image_path)
+
+
+@router.get("/preview/{task_id}/mask/{mask_id}")
+async def get_preview_mask(task_id: str, mask_id: str):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task не знайдено")
+
+    item = _find_preview_mask(tasks[task_id], mask_id)
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Маску не знайдено")
+
+    mask = item["mask"].astype(np.uint8) * 255
+    ok, encoded = cv2.imencode(".png", mask)
+
+    if not ok:
+        raise HTTPException(status_code=500, detail="Не вдалося закодувати маску")
+
+    return Response(content=encoded.tobytes(), media_type="image/png")
+
+
+@router.get("/preview/{task_id}/mask/{mask_id}/overlay")
+async def get_preview_mask_overlay(task_id: str, mask_id: str):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task не знайдено")
+
+    item = _find_preview_mask(tasks[task_id], mask_id)
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Маску не знайдено")
+
+    mask = item["mask"].astype(bool)
+    overlay = np.zeros((mask.shape[0], mask.shape[1], 4), dtype=np.uint8)
+    overlay[mask] = np.array([139, 92, 246, 150], dtype=np.uint8)
+    ok, encoded = cv2.imencode(".png", overlay)
+
+    if not ok:
+        raise HTTPException(status_code=500, detail="Не вдалося закодувати overlay")
+
+    return Response(content=encoded.tobytes(), media_type="image/png")
+
+
+@router.post("/preview/{task_id}/split/{mask_id}", response_model=MaskPreviewResult)
+async def split_preview_mask(task_id: str, mask_id: str):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task не знайдено")
+
+    task = tasks[task_id]
+    item = _find_preview_mask(task, mask_id)
+
+    if not item:
+        raise HTTPException(status_code=404, detail="Маску не знайдено")
+
+    mask_u8 = item["mask"].astype(np.uint8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_u8, connectivity=8)
+    components = []
+
+    for label_id in range(1, num_labels):
+        area = int(stats[label_id, cv2.CC_STAT_AREA])
+        if area < max(20, int(item["area"] * 0.015)):
+            continue
+        component_mask = labels == label_id
+        components.append((area, component_mask))
+
+    if len(components) < 2:
+        image = task["image"]
+        pixels = image[item["mask"].astype(bool)]
+
+        if len(pixels) >= 20:
+            compactness, labels_2, centers = cv2.kmeans(
+                pixels.astype(np.float32),
+                2,
+                None,
+                (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 25, 1.0),
+                3,
+                cv2.KMEANS_PP_CENTERS,
+            )
+            flat_indices = np.flatnonzero(item["mask"].astype(bool))
+            components = []
+
+            for cluster_id in range(2):
+                cluster_mask = np.zeros(item["mask"].shape, dtype=bool)
+                selector = labels_2.reshape(-1) == cluster_id
+                cluster_mask.flat[flat_indices[selector]] = True
+                area = int(cluster_mask.sum())
+                if area > 0:
+                    components.append((area, cluster_mask))
+
+    if len(components) < 2:
+        raise HTTPException(status_code=400, detail="Цю маску не вдалося розділити автоматично")
+
+    components = sorted(components, key=lambda pair: pair[0], reverse=True)
+    preview_masks = task.get("preview_masks") or []
+    item_index = next(
+        (index for index, preview_item in enumerate(preview_masks) if preview_item.get("id") == mask_id),
+        -1,
+    )
+
+    if item_index < 0:
+        raise HTTPException(status_code=404, detail="Маску не знайдено")
+    next_items = []
+
+    for split_index, (area, component_mask) in enumerate(components, start=1):
+        color = item["color"]
+        next_items.append(
+            {
+                "id": f"{item['id']}-part-{split_index}",
+                "name": f"{item['name']} {split_index}",
+                "color": color,
+                "area": area,
+                "bbox": _mask_bbox(component_mask),
+                "mask": component_mask,
+                "source_label": item.get("source_label", item["name"]),
+            }
+        )
+
+    task["preview_masks"] = preview_masks[:item_index] + next_items + preview_masks[item_index + 1 :]
+    return _preview_payload(task_id)
+
+
+@router.post("/vectorize/finalize/{task_id}", response_model=VectorizeResult)
+async def finalize_vectorize_preview(
+    task_id: str,
+    payload: FinalizeVectorizeRequest,
+    background_tasks: BackgroundTasks,
+):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task не знайдено")
+
+    task = tasks[task_id]
+
+    if not task.get("preview_masks"):
+        raise HTTPException(status_code=400, detail="Preview-маски недоступні")
+
+    requested_layers = [layer.model_dump() for layer in payload.layers]
+
+    if not requested_layers:
+        raise HTTPException(status_code=400, detail="Немає шарів для векторизації")
+
+    task["status"] = TaskStatus.PENDING
+    task["progress"] = 30
+    task["layers"] = None
+    task["metrics"] = None
+    task["svg_path"] = None
+    task["error"] = None
+
+    background_tasks.add_task(
+        _process_preview_finalization,
+        task_id,
+        payload.tolerance,
+        payload.simplify,
+        requested_layers,
+    )
+
+    return VectorizeResult(
+        task_id=task_id,
+        status=TaskStatus.PENDING,
+        filename=task.get("download_filename"),
+        requested_mode=task.get("requested_mode"),
+        mode=task.get("mode"),
     )
 
 
@@ -662,6 +1081,7 @@ async def get_result(task_id: str):
         return VectorizeResult(
             task_id=task_id,
             status=task["status"],
+            filename=task.get("download_filename"),
             requested_mode=task.get("requested_mode"),
             mode=task.get("mode"),
             error=task.get("error"),
@@ -671,6 +1091,7 @@ async def get_result(task_id: str):
         task_id=task_id,
         status=TaskStatus.DONE,
         svg_url=f"/api/download/{task_id}",
+        filename=task.get("download_filename"),
         layers=task.get("layers"),
         metrics=task.get("metrics"),
         requested_mode=task.get("requested_mode"),
@@ -698,7 +1119,7 @@ async def download_svg(task_id: str):
     return FileResponse(
         svg_path,
         media_type="image/svg+xml",
-        filename=f"{task_id}.svg",
+        filename=tasks[task_id].get("download_filename") or f"{task_id}.svg",
     )
 
     from PIL import Image

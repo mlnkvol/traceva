@@ -30,6 +30,8 @@ Thumbs.db
 
 uploads/
 outputs/
+backend/results/
+backend/checkpoints/*.pt
 tmp/
 temp/
 
