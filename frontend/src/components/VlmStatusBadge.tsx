@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
+import { CheckCircle2, Loader2 } from 'lucide-react'
 
 import { fetchVlmStatus, VlmStatus } from '../api/vectorize'
 
@@ -22,13 +22,7 @@ export function VlmStatusBadge() {
         }
       } catch {
         if (cancelled) return
-        setStatus({
-          enabled: true,
-          model: '',
-          device: '',
-          ready: false,
-          load_failed: true,
-        })
+        setStatus(null)
       }
     }
 
@@ -40,16 +34,7 @@ export function VlmStatusBadge() {
     }
   }, [])
 
-  if (!status?.enabled) return null
-
-  if (status.load_failed) {
-    return (
-      <div className="inline-flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800">
-        <AlertTriangle size={14} />
-        AI-іменування недоступне, шари отримають базові імена
-      </div>
-    )
-  }
+  if (!status?.enabled || status.load_failed) return null
 
   if (status.ready) {
     return (
