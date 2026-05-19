@@ -53,7 +53,7 @@ interface ParameterRecommendation {
 }
 
 const PRODUCT_NAME = 'Traceva'
-const PRODUCT_TAGLINE = 'Gapless SVG Studio for design and CAD'
+const PRODUCT_TAGLINE = 'SVG зі структурою, а не з тисячею контурів.'
 const ANALYSIS_HISTORY_KEY = 'traceva-analysis-history'
 
 function getModeTitle(mode?: VectorizeMode | null): string {
@@ -1114,6 +1114,72 @@ export default function Home() {
             )}
           </section>
         )}
+
+        <section className="mt-10 rounded-2xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+          <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr]">
+            <div className="p-6 lg:p-8 border-b xl:border-b-0 xl:border-r border-gray-100">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-10 h-10 rounded-xl bg-violet-100 text-violet-700 flex items-center justify-center shrink-0">
+                  <Sparkles size={19} />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-violet-600 uppercase tracking-wide">Про платформу</p>
+                  <h2 className="text-2xl font-extrabold text-gray-950">Що таке Traceva</h2>
+                </div>
+              </div>
+
+              <div className="space-y-4 text-sm lg:text-base leading-relaxed text-gray-600">
+                <p>
+                  Traceva перетворює растрові зображення на редаговані SVG-документи зі структурованими
+                  шарами. На відміну від звичайних трасувальників, що віддають тисячі невпорядкованих
+                  контурів, тут кожен змістовий об&apos;єкт — обличчя, дерево, тінь, фон — стає окремим
+                  іменованим шаром. Імена шарам дає візуально-мовна модель Florence-2 і зберігає їх у
+                  inkscape:label, тож SVG нормально відкривається у Figma, Illustrator та Inkscape з готовою
+                  деревовидною структурою.
+                </p>
+
+                <p>
+                  Перед фінальною векторизацією доступний інтерактивний редактор масок: можна об&apos;єднати,
+                  розділити, перейменувати чи перемістити шар у Z-стеку. Контроль композиції — на тому етапі,
+                  де він найдешевший.
+                </p>
+
+                <p>
+                  Три режими покривають різні задачі: Logo Mode для бінарної графіки, Semantic Mode для фото
+                  та ілюстрацій, Auto Mode для автоматичного вибору. Корисно для бренд-документації,
+                  векторизації ескізів, адаптації застарілого контенту під веб і підготовки шарів для анімації.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 lg:p-8 bg-gray-50/70">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-10 h-10 rounded-xl bg-white text-violet-700 border border-violet-100 flex items-center justify-center shrink-0">
+                  <Lightbulb size={19} />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-violet-600 uppercase tracking-wide">Практичні сценарії</p>
+                  <h2 className="text-2xl font-extrabold text-gray-950">Для яких задач корисна</h2>
+                </div>
+              </div>
+
+              <ul className="space-y-3 text-sm lg:text-base leading-relaxed text-gray-700">
+                {[
+                  'Перевести растровий логотип у чистий редагований SVG для бренд-документації.',
+                  'Векторизувати ескіз або растрову ілюстрацію зі збереженням смислової структури для подальшого допрацювання в Figma чи Illustrator.',
+                  'Адаптувати застарілий растровий контент під сучасний веб-дизайн без втрати якості при масштабуванні.',
+                  'Підготувати графіку для двовимірної анімації, де кожен елемент має бути окремим керованим шаром.',
+                  'Архівувати ілюстрації у форматі, який не залежить від роздільної здатності екрана.',
+                ].map((item) => (
+                  <li key={item} className="flex gap-3">
+                    <span className="mt-2 h-2 w-2 rounded-full bg-violet-500 shrink-0" />
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
   )
