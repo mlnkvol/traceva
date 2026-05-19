@@ -26,6 +26,7 @@ from app.services.bezier import fit_cubic_bezier
 from app.services.svg_builder import SVGBuilder
 from app.services.logo_vectorizer import LogoVectorizer
 from app.services.layer_namer import LayerNamer
+from app.services.mode_router import is_logo_candidate
 from app.utils.metrics import compute_all_metrics
 
 
@@ -647,7 +648,7 @@ def _process_image(
         requested_mode = normalize_mode(mode)
 
         if requested_mode == "auto":
-            selected_mode = "logo" if _is_logo_candidate(image) else "semantic"
+            selected_mode = "logo" if is_logo_candidate(image) else "semantic"
         else:
             selected_mode = requested_mode
 
@@ -823,7 +824,7 @@ async def prepare_vectorize_preview(
     selected_mode = "logo" if requested_mode == "logo" else "semantic"
 
     if requested_mode == "auto":
-        selected_mode = "logo" if _is_logo_candidate(image) else "semantic"
+        selected_mode = "logo" if is_logo_candidate(image) else "semantic"
 
     if selected_mode == "logo":
         full_mask = np.ones((h, w), dtype=bool)
