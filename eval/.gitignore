@@ -1,0 +1,10 @@
+data/*
+results/*
+*.svg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.csv
+!data/.gitkeep
+!results/.gitkeep
