@@ -69,5 +69,15 @@ class Settings(BaseSettings):
         alias="VLM_CACHE_DIR",
     )
 
+    VLM_WARMUP_ON_START: bool = Field(
+        default=True,
+        alias="VLM_WARMUP_ON_START",
+    )
+
+    VLM_ON_DEMAND_LOAD_ENABLED: bool = Field(
+        default=False,
+        alias="VLM_ON_DEMAND_LOAD_ENABLED",
+    )
+
 
 settings = Settings()

@@ -26,6 +26,8 @@ services:
       - VLM_LAYER_NAMING_MAX_TOKENS=12
       - VLM_LAYER_NAMING_CROP_SIZE=384
       - VLM_CACHE_DIR=/app/.cache/huggingface
+      - VLM_WARMUP_ON_START=false
+      - VLM_ON_DEMAND_LOAD_ENABLED=false
     depends_on:
       - redis
 

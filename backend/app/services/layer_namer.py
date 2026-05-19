@@ -74,6 +74,9 @@ class LayerNamer:
         return self._dedupe_names(names)
 
     def _caption_crop(self, crop: Image.Image) -> Optional[str]:
+        if not self.is_ready and not getattr(settings, "VLM_ON_DEMAND_LOAD_ENABLED", False):
+            return None
+
         if not self._ensure_model_loaded():
             return None
 

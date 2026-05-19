@@ -14,7 +14,10 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app):
-    if getattr(settings, "VLM_LAYER_NAMING_ENABLED", False):
+    if (
+        getattr(settings, "VLM_LAYER_NAMING_ENABLED", False)
+        and getattr(settings, "VLM_WARMUP_ON_START", True)
+    ):
         async def _warmup():
             ok = await asyncio.to_thread(layer_namer.warmup)
             logger.info("VLM warmup finished: ok=%s", ok)
